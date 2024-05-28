@@ -1,25 +1,60 @@
-const socket = new WebSocket('ws://localhost:3000/ws');
+const messageViewSelector = "#message-log"
+const testButtonSelector = "#test-button"
+
+function connectWS() {
+    return new WebSocket('ws://localhost:3000/ws');
+}
+
+let socket = connectWS();
 
 socket.addEventListener('open', function (event) {
     socket.send('Hello Server!');
+    console.info("WebSocket Ready.")
+
+    window.setInterval(() => socket.ping("Logger"), 30000)
 });
 
-socket.addEventListener('message', function (event) {
-    console.log('Message from server ', event.data);
-});
+socket.addEventListener('close', () => {
+    window.setTimeout(() => {
+        connectWS()
+    }, 100)
+})
 
+window.onload = () => {
 
-setTimeout(() => {
-    const obj = { hello: "world" };
-    const blob = new Blob([JSON.stringify(obj, null, 2)], {
-      type: "application/json",
-    });
-    console.log("Sending blob over websocket");
-    socket.send(blob);
-}, 1000);
+    // Setup message logging view
+    let loggingView = document.querySelector(messageViewSelector);
 
-setTimeout(() => {
-    socket.send('About done here...');
-    console.log("Sending close over websocket");
-    socket.close(3000, "Crash and Burn!");
-}, 3000);
+    if (loggingView !== null) {
+        socket.addEventListener('message', function (event) {
+            console.log('Message from server ', event.data);
+            loggingView.appendChild(newLogViewEntry(event.data))
+        });
+    }
+    else {
+        console.error(`Failed selecting DOM element for message display with selector "${messageViewSelector}"`)
+    }
+
+    // Setup test button
+    let testButton = document.querySelector(testButtonSelector)
+
+    if (testButton !== null) {
+        testButton.addEventListener('click', () => {
+            socket.send("Testing 1, 2, 3")
+        })
+    }
+    else {
+        console.error(`Failed selecting DOM element for test message button with selector "${testButtonSelector}"`)
+    }
+
+    console.info("Logger UI Ready.")
+}
+
+function newLogViewEntry(text) {
+    let code = document.createElement("code")
+    code.innerText = text
+    let item = document.createElement("li")
+    item.appendChild(code)
+
+    return item
+}
