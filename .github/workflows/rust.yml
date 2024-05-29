@@ -25,5 +25,5 @@ jobs:
     # Store release build 
     - uses: actions/upload-artifact@v4
       with:
-        name: Capture release build of pub-sub-tiny
+        name: pub-sub-tiny
         path: target/release/pub-sub-tiny # or path/to/artifact
