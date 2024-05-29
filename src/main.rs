@@ -2,19 +2,12 @@
 // Built on Axum web and tungstenite for the the WS protocol.
 
 use axum::{
-    body::Body,
-    extract::{
-        connect_info::ConnectInfo,
-        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
-        FromRequest, Json, Request,
-    },
-    http::{header::CONTENT_TYPE, response, Response, StatusCode},
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Router,
 };
-use axum_extra::{typed_header, TypedHeader};
-use tower::builder;
 use tracing::{event, Level};
 
 use std::sync::Arc;
@@ -94,10 +87,10 @@ async fn main() {
         .fallback_service(ServeDir::new(asset_dir).append_index_html_on_directories(true))
         .route(
             "/ws",
-            get(move |req, info| {
+            get(move |req| {
                 let publish = publish_tx.clone();
                 let manage = manage_tx.clone();
-                ws_handler(req, publish, manage, info)
+                ws_handler(req, publish, manage)
             }),
         )
         .route(
@@ -130,18 +123,16 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     publish: mpsc::Sender<Message>,
     manage: mpsc::Sender<PubSubAction>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
     // Client connected!
     // TODO: Add info log here
 
-    ws.on_upgrade(move |socket| handle_socket(socket, addr, publish, manage))
+    ws.on_upgrade(move |socket| handle_socket(socket, publish, manage))
 }
 
 /// WebSocket state machine closure
 async fn handle_socket(
-    mut socket: WebSocket,
-    who: SocketAddr,
+    socket: WebSocket,
     publish: mpsc::Sender<Message>,
     manage: mpsc::Sender<PubSubAction>,
 ) {
