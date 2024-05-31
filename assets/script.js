@@ -1,12 +1,22 @@
 const messageViewSelector = "#message-log"
 const testButtonSelector = "#test-button"
+const wsURL = `${ isSecure() ? "wss" : "ws" }://${ window.location.host }/ws`
 let connectionAttempts = 0;
 
+function isSecure() {
+    return (window.location.protocol === "https:") ? true : false
+}
+
 function connectWS() {
-    return new WebSocket('ws://localhost:3000/ws');
+    console.info(`Connecting to: ${wsURL}`)
+    return new WebSocket(wsURL);
 }
 
 let socket = connectWS();
+
+socket.addEventListener("error", (event) => {
+    console.error("[WebSocket Error]", event)
+});
 
 socket.addEventListener('open', function (event) {
     socket.send('Hello Server!');
