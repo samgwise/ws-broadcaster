@@ -10,7 +10,6 @@ use axum::{
 };
 use tracing::{event, Level};
 
-use std::sync::Arc;
 use std::{net::SocketAddr, path::PathBuf};
 
 use tower_http::{
@@ -23,12 +22,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use futures::{sink::SinkExt, stream::StreamExt};
 
 use tokio::{
-    sync::{mpsc, Mutex},
+    sync::mpsc,
     time::{Duration, sleep}
 };
 
+#[derive(Clone)]
 enum PubSubAction {
     Subscribe(mpsc::Sender<Message>),
+    Publish(Message),
     Unsubscribe,
 }
 
@@ -42,49 +43,27 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let (publish_tx, mut subscribe_rx) = mpsc::channel::<Message>(128);
-    // let publish = Arc::new(Mutex::new(publish_tx));
-
-    let subscribers = Arc::new(Mutex::new(Vec::<mpsc::Sender<Message>>::new()));
-    let subs_list_ref = Arc::clone(&subscribers);
-
-    // Publish to all subscribers
-    tokio::spawn(async move {
-        loop {
-            if let Some(msg) = subscribe_rx.recv().await {
-                let subs_list = subs_list_ref.lock().await;
-                for s in subs_list.as_slice() {
-                    let _ = s.send(msg.clone()).await;
-                }
-            }
-        }
-    });
-
-    // Ping clients to keep connections alive
-    let publish_ping = publish_tx.clone();
-    tokio::spawn(async move {
-        loop {
-            sleep(Duration::from_secs(30)).await;
-            let _ = publish_ping.send(Message::Ping("!".into())).await;
-        }
-    });
+    // Keep a list of subscribers
+    let mut subscribers = Vec::<mpsc::Sender<Message>>::new();
 
     let (manage_tx, mut manage_rx) = mpsc::channel(128);
-    let subs_list_ref = Arc::clone(&subscribers);
-    // Handle adding and removing subscribers
+    // Handle PubSubActions
     tokio::spawn(async move {
         loop {
             if let Some(msg) = manage_rx.recv().await {
                 match msg {
                     PubSubAction::Subscribe(tx) => {
-                        let mut subs_list = subs_list_ref.lock().await;
-                        subs_list.push(tx)
+                        subscribers.push(tx)
+                    }
+                    PubSubAction::Publish(msg) => {
+                        for sub in subscribers.as_slice() {
+                            let _ = sub.send(msg.clone()).await;
+                        }
                     }
                     PubSubAction::Unsubscribe => {
                         // Trigger a cleaning pass of the subscriber channels
-                        let mut subs_list = subs_list_ref.lock().await;
-                        *subs_list = Vec::from_iter(
-                            subs_list.clone().into_iter().filter(|con| !con.is_closed()),
+                        subscribers = Vec::from_iter(
+                            subscribers.into_iter().filter(|con| !con.is_closed()),
                         )
                     }
                 }
@@ -92,17 +71,26 @@ async fn main() {
         }
     });
 
+     // Ping clients to keep connections alive
+     let publish_ping = manage_tx.clone();
+     tokio::spawn(async move {
+        let ping = PubSubAction::Publish(Message::Ping("!".into()));
+         loop {
+             sleep(Duration::from_secs(30)).await;
+             let _ = publish_ping.send(ping.clone()).await;
+         }
+     });
+
     let asset_dir = PathBuf::from("./").join("assets");
 
-    let post_publish_tx = publish_tx.clone();
+    let post_publish_tx = manage_tx.clone();
     let app = Router::new()
         .fallback_service(ServeDir::new(asset_dir).append_index_html_on_directories(true))
         .route(
             "/ws",
             get(move |req| {
-                let publish = publish_tx.clone();
                 let manage = manage_tx.clone();
-                ws_handler(req, publish, manage)
+                ws_handler(req, manage)
             }),
         )
         .route(
@@ -133,19 +121,17 @@ async fn main() {
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    publish: mpsc::Sender<Message>,
     manage: mpsc::Sender<PubSubAction>,
 ) -> impl IntoResponse {
     // Client connected!
     // TODO: Add info log here
 
-    ws.on_upgrade(move |socket| handle_socket(socket, publish, manage))
+    ws.on_upgrade(move |socket| handle_socket(socket, manage))
 }
 
 /// WebSocket state machine closure
 async fn handle_socket(
     socket: WebSocket,
-    publish: mpsc::Sender<Message>,
     manage: mpsc::Sender<PubSubAction>,
 ) {
     let (inbox_tx, mut inbox_rx) = mpsc::channel(32);
@@ -174,7 +160,7 @@ async fn handle_socket(
                     // Do not propagate
                 }
                 _ => {
-                    let _ = publish.send(msg).await;
+                    let _ = manage.send(PubSubAction::Publish(msg)).await;
                 }
             }
         }
@@ -201,11 +187,11 @@ async fn handle_socket(
     event!(Level::DEBUG, "WebSocket finished");
 }
 
-async fn publish_handler(req: String, publish: mpsc::Sender<Message>) -> impl IntoResponse {
+async fn publish_handler(req: String, publish: mpsc::Sender<PubSubAction>) -> impl IntoResponse {
 
     let msg = Message::from(req);
 
-    match publish.send(msg).await {
+    match publish.send(PubSubAction::Publish(msg)).await {
         Ok(_) => (StatusCode::OK, "").into_response(),
         Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Unable to handle messages at this time.").into_response()
     }
