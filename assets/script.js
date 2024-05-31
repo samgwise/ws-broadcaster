@@ -1,5 +1,6 @@
 const messageViewSelector = "#message-log"
 const testButtonSelector = "#test-button"
+let connectionAttempts = 0;
 
 function connectWS() {
     return new WebSocket('ws://localhost:3000/ws');
@@ -10,14 +11,24 @@ let socket = connectWS();
 socket.addEventListener('open', function (event) {
     socket.send('Hello Server!');
     console.info("WebSocket Ready.")
-
-    window.setInterval(() => socket.ping("Logger"), 30000)
+    connectionAttempts = 0
 });
 
+function reconnectWS() {
+    if (socket.readyState === socket.CLOSED) {
+        console.info(`Reconnecting, attempt ${ ++connectionAttempts }...`)
+        socket = connectWS()
+    }
+}
+
+// Enable reconnect check
+// This is primarily to cover retry connection logic if the first connection or reconnection attempt fails.
+window.setInterval(reconnectWS, 3000)
+
 socket.addEventListener('close', () => {
-    window.setTimeout(() => {
-        connectWS()
-    }, 100)
+    console.info("WebSocket disconnected, attempting to reconnect...")
+
+    window.setTimeout(reconnectWS, 100)
 })
 
 window.onload = () => {
@@ -28,7 +39,9 @@ window.onload = () => {
     if (loggingView !== null) {
         socket.addEventListener('message', function (event) {
             console.log('Message from server ', event.data);
-            loggingView.appendChild(newLogViewEntry(event.data))
+            let newLog = newLogViewEntry(event.data)
+            loggingView.appendChild(newLog)
+            newLog.scrollIntoView()
         });
     }
     else {

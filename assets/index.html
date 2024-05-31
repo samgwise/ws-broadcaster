@@ -4,14 +4,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WS Testing</title>
+    <title>WS Broadcast Log</title>
+    <style>
+        .scrollable {
+            height: 300px;
+            overflow-y: scroll;
+            scrollbar-gutter: 30px;
+        }
+    </style>
 </head>
 
 <body>
     <div>
         <h1>WS Message Log</h1>
-        <ul id="message-log">
-            <!-- <li id="message-template"><code>{"some": "JSON}</code></li> -->
+        <div class="scrollable">
+            <ul id="message-log">
+                <!-- <li id="message-template"><code>{"some": "JSON}</code></li> -->
+            </div>
         </div>
         <button id="test-button">Send Test</button>
     </div>
