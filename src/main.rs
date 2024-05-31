@@ -22,7 +22,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use futures::{sink::SinkExt, stream::StreamExt};
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::{
+    sync::{mpsc, Mutex},
+    time::{Duration, sleep}
+};
 
 enum PubSubAction {
     Subscribe(mpsc::Sender<Message>),
@@ -54,6 +57,15 @@ async fn main() {
                     let _ = s.send(msg.clone()).await;
                 }
             }
+        }
+    });
+
+    // Ping clients to keep connections alive
+    let publish_ping = publish_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(30)).await;
+            let _ = publish_ping.send(Message::Ping("!".into())).await;
         }
     });
 
