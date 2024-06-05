@@ -50,11 +50,18 @@ pub struct Client {
 impl Client {
     fn new(mut id_sequence: impl FnMut() -> u16, tx: mpsc::Sender<PubSubMessage>, name_space: String) -> Client {
         let id = id_sequence();
+        let name_space = if name_space.ends_with("/") {
+            name_space
+        }
+        else {
+            format!("{}/", name_space)
+        };
+
         Client {tx, id, name_space}
     }
 
     fn unique_ns(&self) -> String {
-        format!("{}/{}", self.name_space, self.id)
+        format!("{}{}", self.name_space, self.id)
     }
 }
 
@@ -80,13 +87,18 @@ mod tests {
         let client = Client::new(&mut id_source, tx, "/hello/world".into());
         // match
         assert_eq!(client.is_in_scope(&"/hello/world".into()), true);
+        assert_eq!(client.is_in_scope(&"/hello/world/".into()), true);
         assert_eq!(client.is_in_scope(&"/hello".into()), true);
         assert_eq!(client.is_in_scope(&"/".into()), true);
         assert_eq!(client.is_in_scope(&"".into()), true);
 
         // No match
         assert_eq!(client.is_in_scope(&"/hello/world/and/mars".into()), false);
-        assert_eq!(client.is_in_scope(&"/hello/world/".into()), false);
+        assert_eq!(client.is_in_scope(&"/hello/world-wide-web".into()), false);
+        // N.B. the name '/hello/worl' will currently match, but it is not to specification
+        // This isn't an issue in practice, since Client namespaces are also the source of 
+        // Message namespaces and client namespaces are sanitised to end in a '/'.
+        assert_eq!(client.is_in_scope(&"/hello/worl/".into()), false);
         assert_eq!(client.is_in_scope(&"/Hello/World".into()), false);
         assert_eq!(client.is_in_scope(&"/hi/mars".into()), false);
 
