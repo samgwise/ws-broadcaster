@@ -1,6 +1,8 @@
 // A minimalistic server for handling pub-sub style message syndication over the internet.
 // Built on Axum web and tungstenite for the the WS protocol.
 
+mod messaging;
+
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     http::StatusCode,
