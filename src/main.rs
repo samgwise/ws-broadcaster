@@ -2,6 +2,7 @@
 // Built on Axum web and tungstenite for the the WS protocol.
 
 mod messaging;
+use messaging::*;
 
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
@@ -30,8 +31,8 @@ use tokio::{
 
 #[derive(Clone)]
 enum PubSubAction {
-    Subscribe(mpsc::Sender<Message>),
-    Publish(Message),
+    Subscribe(PubSubClient),
+    Publish(PubSubMessage),
     Unsubscribe,
 }
 
@@ -46,7 +47,7 @@ async fn main() {
         .init();
 
     // Keep a list of subscribers
-    let mut subscribers = Vec::<mpsc::Sender<Message>>::new();
+    let mut subscribers = Vec::<PubSubClient>::new();
 
     let (manage_tx, mut manage_rx) = mpsc::channel(128);
     // Handle PubSubActions
@@ -54,18 +55,18 @@ async fn main() {
         loop {
             if let Some(msg) = manage_rx.recv().await {
                 match msg {
-                    PubSubAction::Subscribe(tx) => {
-                        subscribers.push(tx)
+                    PubSubAction::Subscribe(client) => {
+                        subscribers.push(client)
                     }
                     PubSubAction::Publish(msg) => {
                         for sub in subscribers.as_slice() {
-                            let _ = sub.send(msg.clone()).await;
+                            let _ = sub.tx.send(msg.clone()).await;
                         }
                     }
                     PubSubAction::Unsubscribe => {
                         // Trigger a cleaning pass of the subscriber channels
                         subscribers = Vec::from_iter(
-                            subscribers.into_iter().filter(|con| !con.is_closed()),
+                            subscribers.into_iter().filter(|con| !con.tx.is_closed()),
                         )
                     }
                 }
@@ -76,7 +77,7 @@ async fn main() {
      // Ping clients to keep connections alive
      let publish_ping = manage_tx.clone();
      tokio::spawn(async move {
-        let ping = PubSubAction::Publish(Message::Ping("!".into()));
+        let ping = PubSubAction::Publish(PubSubMessage::new_ping("/"));
          loop {
              sleep(Duration::from_secs(30)).await;
              let _ = publish_ping.send(ping.clone()).await;
@@ -191,7 +192,7 @@ async fn handle_socket(
 
 async fn publish_handler(req: String, publish: mpsc::Sender<PubSubAction>) -> impl IntoResponse {
 
-    let msg = Message::from(req);
+    let msg = PubSubMessage::new_server_message("/", Message::from(req));
 
     match publish.send(PubSubAction::Publish(msg)).await {
         Ok(_) => (StatusCode::OK, "").into_response(),

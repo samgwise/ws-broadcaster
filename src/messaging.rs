@@ -1,6 +1,7 @@
 use tokio::sync::{mpsc, oneshot};
 use axum::extract::ws::Message;
 
+// 1..^Inf
 pub fn auto_inc_u16() -> impl FnMut() -> u16 {
     let mut counter = 0u16;
     move || {
@@ -29,10 +30,21 @@ pub fn client_id_from_hexcode(id_text: &String) -> Result<u16, String> {
 }
 
 /// PubSub Messaging wrapper
+#[derive(Clone)]
 pub struct PubSubMessage {
     message: Message,
     id_origin: u16,
     name_space: String
+}
+
+impl PubSubMessage {
+    pub fn new_server_message(name_space: &str, message: Message) -> PubSubMessage {
+        PubSubMessage {message: message, id_origin: 0u16, name_space: name_space.to_string()}
+    }
+
+    pub fn new_ping(name_space: &str) -> PubSubMessage {
+        PubSubMessage {message: Message::Ping("!".into()), id_origin: 0u16, name_space: name_space.to_string()}
+    }
 }
 
 pub trait RouteNameSpace {
@@ -41,14 +53,15 @@ pub trait RouteNameSpace {
     fn is_origin(&self, id: u16) -> bool;
 }
 
-pub struct Client {
-    tx: mpsc::Sender<PubSubMessage>,
+#[derive(Clone)]
+pub struct PubSubClient {
+    pub tx: mpsc::Sender<PubSubMessage>,
     id: u16,
     name_space: String
 }
 
-impl Client {
-    fn new(mut id_sequence: impl FnMut() -> u16, tx: mpsc::Sender<PubSubMessage>, name_space: String) -> Client {
+impl PubSubClient {
+    fn new(mut id_sequence: impl FnMut() -> u16, tx: mpsc::Sender<PubSubMessage>, name_space: String) -> PubSubClient {
         let id = id_sequence();
         let name_space = if name_space.ends_with("/") {
             name_space
@@ -57,7 +70,7 @@ impl Client {
             format!("{}/", name_space)
         };
 
-        Client {tx, id, name_space}
+        PubSubClient {tx, id, name_space}
     }
 
     fn unique_ns(&self) -> String {
@@ -65,7 +78,7 @@ impl Client {
     }
 }
 
-impl RouteNameSpace for Client {
+impl RouteNameSpace for PubSubClient {
     fn is_in_scope(&self, message_ns: &String) -> bool {
         let unique_ns = self.unique_ns();// = message.name_space.clone();
         unique_ns == *message_ns || self.name_space.contains(message_ns)
@@ -84,7 +97,7 @@ mod tests {
     fn message_scope() {
         let (tx, _) = mpsc::channel(1);
         let mut id_source = auto_inc_u16();
-        let client = Client::new(&mut id_source, tx, "/hello/world".into());
+        let client = PubSubClient::new(&mut id_source, tx, "/hello/world".into());
         // match
         assert_eq!(client.is_in_scope(&"/hello/world".into()), true);
         assert_eq!(client.is_in_scope(&"/hello/world/".into()), true);
@@ -110,7 +123,7 @@ mod tests {
     fn is_client_origin_of_message() {
         let (tx, _) = mpsc::channel(1);
         let mut id_source = auto_inc_u16();
-        let client = Client::new(&mut id_source, tx, "/hello/world".into());
+        let client = PubSubClient::new(&mut id_source, tx, "/hello/world".into());
 
         let message_same_origin = client.id;
         assert_eq!(client.is_origin(message_same_origin), true);
