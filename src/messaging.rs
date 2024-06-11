@@ -32,17 +32,21 @@ pub fn client_id_from_hexcode(id_text: &String) -> Result<u16, String> {
 /// PubSub Messaging wrapper
 #[derive(Clone)]
 pub struct PubSubMessage {
-    message: Message,
-    id_origin: u16,
-    name_space: String
+    pub message: Message,
+    pub id_origin: u16,
+    pub name_space: String
 }
 
 impl PubSubMessage {
-    pub fn new_server_message(name_space: &str, message: Message) -> PubSubMessage {
-        PubSubMessage {message: message, id_origin: 0u16, name_space: name_space.to_string()}
+    pub fn new_server_message(name_space: &str, message: Message) -> Self {
+        PubSubMessage {message, id_origin: 0u16, name_space: name_space.to_string()}
     }
 
-    pub fn new_ping(name_space: &str) -> PubSubMessage {
+    pub fn new_client_message(name_space: &str, id_origin: u16, message: Message) -> Self {
+        PubSubMessage {message, id_origin, name_space: name_space.to_string()}
+    }
+
+    pub fn new_ping(name_space: &str) -> Self {
         PubSubMessage {message: Message::Ping("!".into()), id_origin: 0u16, name_space: name_space.to_string()}
     }
 }
@@ -61,8 +65,7 @@ pub struct PubSubClient {
 }
 
 impl PubSubClient {
-    fn new(mut id_sequence: impl FnMut() -> u16, tx: mpsc::Sender<PubSubMessage>, name_space: String) -> PubSubClient {
-        let id = id_sequence();
+    pub fn new(id: u16, tx: mpsc::Sender<PubSubMessage>, name_space: String) -> PubSubClient {
         let name_space = if name_space.ends_with("/") {
             name_space
         }
@@ -97,7 +100,8 @@ mod tests {
     fn message_scope() {
         let (tx, _) = mpsc::channel(1);
         let mut id_source = auto_inc_u16();
-        let client = PubSubClient::new(&mut id_source, tx, "/hello/world".into());
+        let id = id_source();
+        let client = PubSubClient::new(id, tx, "/hello/world".into());
         // match
         assert_eq!(client.is_in_scope(&"/hello/world".into()), true);
         assert_eq!(client.is_in_scope(&"/hello/world/".into()), true);
@@ -123,7 +127,8 @@ mod tests {
     fn is_client_origin_of_message() {
         let (tx, _) = mpsc::channel(1);
         let mut id_source = auto_inc_u16();
-        let client = PubSubClient::new(&mut id_source, tx, "/hello/world".into());
+        let id = id_source();
+        let client = PubSubClient::new(id, tx, "/hello/world".into());
 
         let message_same_origin = client.id;
         assert_eq!(client.is_origin(message_same_origin), true);

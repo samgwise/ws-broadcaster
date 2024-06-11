@@ -25,7 +25,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use futures::{sink::SinkExt, stream::StreamExt};
 
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc,oneshot},
     time::{Duration, sleep}
 };
 
@@ -45,6 +45,10 @@ async fn main() {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    // Id generator
+    let (id_tx, id_rx) = mpsc::channel::<oneshot::Sender<u16>>(100);
+    tokio::spawn(id_generator(id_rx));
 
     // Keep a list of subscribers
     let mut subscribers = Vec::<PubSubClient>::new();
@@ -93,7 +97,9 @@ async fn main() {
             "/ws",
             get(move |req| {
                 let manage = manage_tx.clone();
-                ws_handler(req, manage)
+                let id_source = id_tx.clone();
+                
+                ws_handler(req, id_source, manage)
             }),
         )
         .route(
@@ -124,27 +130,43 @@ async fn main() {
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
+    id_source: mpsc::Sender<oneshot::Sender<u16>>,
     manage: mpsc::Sender<PubSubAction>,
 ) -> impl IntoResponse {
     // Client connected!
     // TODO: Add info log here
+    let (id_request, id_response) = oneshot::channel();
+    let _ = id_source.send(id_request).await;
 
-    ws.on_upgrade(move |socket| handle_socket(socket, manage))
+    match id_response.await {
+        Ok(id) => ws.on_upgrade(move |socket| handle_socket(socket, id, manage)),
+        Err(e) => {
+            // TODO: Log connection error
+            (StatusCode::SERVICE_UNAVAILABLE, "Unable to handle subscriptions at this time.").into_response()
+        }
+    }
 }
 
 /// WebSocket state machine closure
 async fn handle_socket(
     socket: WebSocket,
+    id: u16,
     manage: mpsc::Sender<PubSubAction>,
 ) {
+   
+    // TX/RX pair for the subscription
     let (inbox_tx, mut inbox_rx) = mpsc::channel(32);
-    let _ = manage.send(PubSubAction::Subscribe(inbox_tx)).await;
+
+    let client = PubSubClient::new(id, inbox_tx, '/'.into());
+    let _ = manage.send(PubSubAction::Subscribe(client.clone())).await;
 
     let (mut sender, mut receiver) = socket.split();
 
     let mut send_task = tokio::spawn(async move {
         while let Some(msg) = inbox_rx.recv().await {
-            let _ = sender.send(msg).await;
+            if client.is_in_scope(&msg.name_space) {
+                let _ = sender.send(msg.message).await;
+            }
         }
     });
 
@@ -163,6 +185,7 @@ async fn handle_socket(
                     // Do not propagate
                 }
                 _ => {
+                    let msg = PubSubMessage::new_client_message("/".into(), id, msg);
                     let _ = manage.send(PubSubAction::Publish(msg)).await;
                 }
             }
