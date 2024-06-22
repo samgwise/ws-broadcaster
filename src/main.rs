@@ -5,8 +5,15 @@ mod messaging;
 use messaging::*;
 
 use axum::{
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    http::StatusCode,
+    extract::{
+        Query,
+        ws::{Message, WebSocket, WebSocketUpgrade}
+    },
+    http::{
+        StatusCode,
+        header::HeaderMap,
+        header::HeaderValue
+    },
     response::IntoResponse,
     routing::{get, post},
     Router,
@@ -14,6 +21,7 @@ use axum::{
 use tracing::{event, Level};
 
 use std::{net::SocketAddr, path::PathBuf};
+use std::collections::HashMap;
 
 use tower_http::{
     services::ServeDir,
@@ -25,7 +33,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use futures::{sink::SinkExt, stream::StreamExt};
 
 use tokio::{
-    sync::{mpsc,oneshot},
+    sync::{mpsc, oneshot},
     time::{Duration, sleep}
 };
 
@@ -41,7 +49,7 @@ async fn main() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "example_websockets=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| "publish_handler=debug,tower_http=debug".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -95,18 +103,18 @@ async fn main() {
         .fallback_service(ServeDir::new(asset_dir).append_index_html_on_directories(true))
         .route(
             "/ws",
-            get(move |req| {
+            get(move |path, req| {
                 let manage = manage_tx.clone();
                 let id_source = id_tx.clone();
                 
-                ws_handler(req, id_source, manage)
+                ws_handler(path, req, id_source, manage)
             }),
         )
         .route(
             "/publish",
-            post(move |req| {
+            post(move |header, req| {
                 let publish = post_publish_tx.clone();
-                publish_handler(req, publish)
+                publish_handler(header, req, publish)
             }),
         )
         .layer(
@@ -129,6 +137,7 @@ async fn main() {
 }
 
 async fn ws_handler(
+    Query(params): Query<HashMap<String, String>>,
     ws: WebSocketUpgrade,
     id_source: mpsc::Sender<oneshot::Sender<u16>>,
     manage: mpsc::Sender<PubSubAction>,
@@ -139,9 +148,28 @@ async fn ws_handler(
     let _ = id_source.send(id_request).await;
 
     match id_response.await {
-        Ok(id) => ws.on_upgrade(move |socket| handle_socket(socket, id, manage)),
+        Ok(id) => {
+            let mut namespace = String::from("/");
+            if let Some(ns) = params.get("namespace") {
+                namespace.clone_from(ns);
+            }
+
+            let header_namespace = namespace.clone();
+            let mut ws_upgrade = ws.on_upgrade(move |socket| handle_socket(namespace, socket, id, manage));
+            
+            // Add subscriber id to header
+            let header = ws_upgrade.headers_mut();
+            header.append("X-Subscriber-Id", id.into());
+            header.append(
+                "X-Publish-Namespace", 
+                HeaderValue::from_str(&header_namespace)
+                    .unwrap_or_else(|_| HeaderValue::from_static("/"))
+                );
+
+            ws_upgrade
+        },
         Err(e) => {
-            // TODO: Log connection error
+            event!(Level::ERROR, "Failed obtaining id for client: {:?}", e);
             (StatusCode::SERVICE_UNAVAILABLE, "Unable to handle subscriptions at this time.").into_response()
         }
     }
@@ -149,6 +177,7 @@ async fn ws_handler(
 
 /// WebSocket state machine closure
 async fn handle_socket(
+    namespace: String,
     socket: WebSocket,
     id: u16,
     manage: mpsc::Sender<PubSubAction>,
@@ -156,15 +185,16 @@ async fn handle_socket(
    
     // TX/RX pair for the subscription
     let (inbox_tx, mut inbox_rx) = mpsc::channel(32);
+    let message_namespace = namespace.clone();
 
-    let client = PubSubClient::new(id, inbox_tx, '/'.into());
+    let client = PubSubClient::new(id, inbox_tx, namespace.into());
     let _ = manage.send(PubSubAction::Subscribe(client.clone())).await;
 
     let (mut sender, mut receiver) = socket.split();
 
     let mut send_task = tokio::spawn(async move {
         while let Some(msg) = inbox_rx.recv().await {
-            if client.is_in_scope(&msg.name_space) {
+            if client.accept_message(msg.id_origin, &msg.namespace) {
                 let _ = sender.send(msg.message).await;
             }
         }
@@ -185,7 +215,7 @@ async fn handle_socket(
                     // Do not propagate
                 }
                 _ => {
-                    let msg = PubSubMessage::new_client_message("/".into(), id, msg);
+                    let msg = PubSubMessage::new_client_message(&message_namespace, id, msg);
                     let _ = manage.send(PubSubAction::Publish(msg)).await;
                 }
             }
@@ -213,12 +243,18 @@ async fn handle_socket(
     event!(Level::DEBUG, "WebSocket finished");
 }
 
-async fn publish_handler(req: String, publish: mpsc::Sender<PubSubAction>) -> impl IntoResponse {
+async fn publish_handler(headers: HeaderMap, req: String, publish: mpsc::Sender<PubSubAction>) -> impl IntoResponse {
+    // Get name space from the header if provided
+    let namespace = match headers.get("X-Publish-Namespace") {
+        Some(ns) => ns.to_str().unwrap_or_default(),
+        None => "/"
+    };
 
-    let msg = PubSubMessage::new_server_message("/", Message::from(req));
+    let msg = PubSubMessage::new_server_message(&namespace, Message::from(req));
 
     match publish.send(PubSubAction::Publish(msg)).await {
         Ok(_) => (StatusCode::OK, "").into_response(),
         Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Unable to handle messages at this time.").into_response()
     }
+    
 }

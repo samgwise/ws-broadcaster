@@ -34,20 +34,20 @@ pub fn client_id_from_hexcode(id_text: &String) -> Result<u16, String> {
 pub struct PubSubMessage {
     pub message: Message,
     pub id_origin: u16,
-    pub name_space: String
+    pub namespace: String
 }
 
 impl PubSubMessage {
-    pub fn new_server_message(name_space: &str, message: Message) -> Self {
-        PubSubMessage {message, id_origin: 0u16, name_space: name_space.to_string()}
+    pub fn new_server_message(namespace: &str, message: Message) -> Self {
+        PubSubMessage {message, id_origin: 0u16, namespace: namespace.to_string()}
     }
 
-    pub fn new_client_message(name_space: &str, id_origin: u16, message: Message) -> Self {
-        PubSubMessage {message, id_origin, name_space: name_space.to_string()}
+    pub fn new_client_message(namespace: &str, id_origin: u16, message: Message) -> Self {
+        PubSubMessage {message, id_origin, namespace: namespace.to_string()}
     }
 
-    pub fn new_ping(name_space: &str) -> Self {
-        PubSubMessage {message: Message::Ping("!".into()), id_origin: 0u16, name_space: name_space.to_string()}
+    pub fn new_ping(namespace: &str) -> Self {
+        PubSubMessage {message: Message::Ping("!".into()), id_origin: 0u16, namespace: namespace.to_string()}
     }
 }
 
@@ -55,41 +55,46 @@ pub trait RouteNameSpace {
     fn is_in_scope(&self, message_ns: &String) -> bool;
 
     fn is_origin(&self, id: u16) -> bool;
+
+    fn accept_message(&self, id: u16, message_ns: &String) -> bool {
+        !self.is_origin(id) && self.is_in_scope(message_ns)
+    }
 }
 
 #[derive(Clone)]
 pub struct PubSubClient {
     pub tx: mpsc::Sender<PubSubMessage>,
     id: u16,
-    name_space: String
+    namespace: String
 }
 
 impl PubSubClient {
-    pub fn new(id: u16, tx: mpsc::Sender<PubSubMessage>, name_space: String) -> PubSubClient {
-        let name_space = if name_space.ends_with("/") {
-            name_space
+    pub fn new(id: u16, tx: mpsc::Sender<PubSubMessage>, namespace: String) -> PubSubClient {
+        let namespace = if namespace.ends_with("/") {
+            namespace
         }
         else {
-            format!("{}/", name_space)
+            format!("{}/", namespace)
         };
 
-        PubSubClient {tx, id, name_space}
+        PubSubClient {tx, id, namespace}
     }
 
     fn unique_ns(&self) -> String {
-        format!("{}{}", self.name_space, self.id)
+        format!("{}{}", self.namespace, self.id)
     }
 }
 
 impl RouteNameSpace for PubSubClient {
     fn is_in_scope(&self, message_ns: &String) -> bool {
-        let unique_ns = self.unique_ns();// = message.name_space.clone();
-        unique_ns == *message_ns || self.name_space.contains(message_ns)
+        let unique_ns = self.unique_ns();
+        unique_ns == *message_ns || self.namespace.contains(message_ns)
     }
 
     fn is_origin(&self, id: u16) -> bool {
         self.id == id
     }
+
 }
 
 #[cfg(test)]
@@ -112,11 +117,9 @@ mod tests {
         // No match
         assert_eq!(client.is_in_scope(&"/hello/world/and/mars".into()), false);
         assert_eq!(client.is_in_scope(&"/hello/world-wide-web".into()), false);
-        // N.B. the name '/hello/worl' will currently match, but it is not to specification
-        // This isn't an issue in practice, since Client namespaces are also the source of 
-        // Message namespaces and client namespaces are sanitised to end in a '/'.
         assert_eq!(client.is_in_scope(&"/hello/worl/".into()), false);
         assert_eq!(client.is_in_scope(&"/Hello/World".into()), false);
+        assert_eq!(client.is_in_scope(&"/Hello/WorldD".into()), false);
         assert_eq!(client.is_in_scope(&"/hi/mars".into()), false);
 
         // Unique name tests
