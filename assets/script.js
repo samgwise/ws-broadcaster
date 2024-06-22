@@ -1,6 +1,6 @@
 const messageViewSelector = "#message-log"
 const testButtonSelector = "#test-button"
-const wsURL = `${ isSecure() ? "wss" : "ws" }://${ window.location.host }/ws`
+const wsURL = `${ isSecure() ? "wss" : "ws" }://${ window.location.host }/ws?namespace=/`
 let connectionAttempts = 0;
 
 function isSecure() {
@@ -9,20 +9,29 @@ function isSecure() {
 
 function connectWS() {
     console.info(`Connecting to: ${wsURL}`)
-    return new WebSocket(wsURL);
+    let socket = new WebSocket(wsURL);
+
+    socket.addEventListener("error", (event) => {
+        console.error("[WebSocket Error]", event)
+    });
+    
+    socket.addEventListener('open', function (event) {
+        socket.send('Hello Server!');
+        console.info("WebSocket Ready.")
+        connectionAttempts = 0
+    });
+
+    socket.addEventListener('close', () => {
+        console.info("WebSocket disconnected, attempting to reconnect...")
+    
+        window.setTimeout(reconnectWS, 100)
+    })
+
+    return socket
 }
 
 let socket = connectWS();
 
-socket.addEventListener("error", (event) => {
-    console.error("[WebSocket Error]", event)
-});
-
-socket.addEventListener('open', function (event) {
-    socket.send('Hello Server!');
-    console.info("WebSocket Ready.")
-    connectionAttempts = 0
-});
 
 function reconnectWS() {
     if (socket.readyState === socket.CLOSED) {
@@ -34,12 +43,6 @@ function reconnectWS() {
 // Enable reconnect check
 // This is primarily to cover retry connection logic if the first connection or reconnection attempt fails.
 window.setInterval(reconnectWS, 3000)
-
-socket.addEventListener('close', () => {
-    console.info("WebSocket disconnected, attempting to reconnect...")
-
-    window.setTimeout(reconnectWS, 100)
-})
 
 window.onload = () => {
 
